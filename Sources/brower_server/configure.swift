@@ -17,7 +17,9 @@ func configure(_ app: Application) async throws {
         tls: .prefer(try .init(configuration: .clientDefault)))
     ), as: .psql)
 
-    app.migrations.add(CreateTodo())
+    app.browserAuthentication = try await BrowserAuthentication.make(for: app.environment)
+
+    app.migrations.add(CreateSyncSnapshot())
 
     // register routes
     try routes(app)
