@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+while read -r old_revision new_revision ref; do
+    [[ "$ref" == refs/heads/main ]] || continue
+    [[ "$new_revision" != 0000000000000000000000000000000000000000 ]] || continue
+
+    exec 9>/var/lock/browser-sync-deploy.lock
+    flock 9
+    unset $(git rev-parse --local-env-vars)
+    git --git-dir=/var/repo/browser-sync.git --work-tree=/var/www/browser-sync checkout -f main
+    cd /var/www/browser-sync
+
+    export PATH="/root/.local/share/swiftly/bin:/root/.swiftly/bin:/usr/local/bin:$PATH"
+    if [[ -f /root/.local/share/swiftly/env.sh ]]; then
+        source /root/.local/share/swiftly/env.sh
+    fi
+    if command -v xcsift >/dev/null 2>&1; then
+        swiftly run swift build -c release --jobs 1 +6.3.3 2>&1 | xcsift -f toon -w
+    else
+        swiftly run swift build -c release --jobs 1 +6.3.3
+    fi
+
+    python3 - <<'PY'
+import json
+import os
+import subprocess
+
+with open('/etc/browser-sync/environment.json', encoding='utf-8') as file:
+    environment = os.environ | json.load(file)
+
+subprocess.run(
+    ['./.build/release/brower_server', 'migrate', '--env', 'production', '--yes'],
+    env=environment,
+    check=True,
+)
+PY
+    pm2 startOrRestart deploy/ecosystem.config.cjs --update-env
+    pm2 save
+    printf '%s\n' "Browser sync deployment completed: $new_revision"
+done

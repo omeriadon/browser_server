@@ -25,7 +25,7 @@ struct BrowserSessionAuthenticator: AsyncBearerAuthenticator {
 }
 
 struct BrowserAuthentication: Sendable {
-    private let appleClientID: String
+    private let appleClientIDs: [String]
     private let sessionKeys: JWTKeyCollection
 
     static func make(for environment: Environment) async throws -> Self {
@@ -46,7 +46,13 @@ struct BrowserAuthentication: Sendable {
             digestAlgorithm: .sha256,
             kid: "browser-session"
         )
-        return Self(appleClientID: appleClientID, sessionKeys: sessionKeys)
+        let appleClientIDs = appleClientID.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !appleClientIDs.isEmpty else {
+            throw Abort(.internalServerError, reason: "APPLE_CLIENT_ID is not configured.")
+        }
+        return Self(appleClientIDs: appleClientIDs, sessionKeys: sessionKeys)
     }
 
     func verifyAppleIdentityToken(_ token: String, client: any Client) async throws -> String {
@@ -66,10 +72,18 @@ struct BrowserAuthentication: Sendable {
         do {
             let appleKeys = try await JWTKeyCollection().add(jwksJSON: keysJSON)
             let payload = try await appleKeys.verify(token, as: AppleIdentityPayload.self)
-            try payload.audience.verifyIntendedAudience(includes: appleClientID)
+            try verifyAppleAudience(payload.audience)
             return payload.subject.value
         } catch {
             throw Abort(.unauthorized, reason: "Invalid Apple identity token.")
+        }
+    }
+
+    func verifyAppleAudience(_ audience: AudienceClaim) throws {
+        guard appleClientIDs.contains(where: {
+            (try? audience.verifyIntendedAudience(includes: $0)) != nil
+        }) else {
+            throw Abort(.unauthorized, reason: "Invalid Apple identity token audience.")
         }
     }
 
