@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Storage, startup, and recovery
+nav_order: 2
+parent: Browser guides
 ---
 
 # Storage, startup, and recovery

@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Diagnostics, troubleshooting, and verification
+nav_order: 11
+parent: Browser guides
 ---
 
 # Diagnostics, troubleshooting, and verification

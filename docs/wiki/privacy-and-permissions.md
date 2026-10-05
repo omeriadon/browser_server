@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Privacy, permissions, and internal URLs
+nav_order: 5
+parent: Browser guides
 ---
 
 # Privacy, permissions, and internal URLs

@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Website apps and Mini Astra
+nav_order: 8
+parent: Browser guides
 ---
 
 # Website apps and Mini Astra

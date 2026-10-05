@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Authentication and credentials
+nav_order: 4
+parent: Browser guides
 ---
 
 # Authentication and credentials

@@ -1,6 +1,7 @@
 ---
 layout: default
-title: Astra documentation
+title: Home
+nav_order: 1
 ---
 
 # Astra documentation

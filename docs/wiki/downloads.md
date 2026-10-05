@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Downloads and file access
+nav_order: 6
+parent: Browser guides
 ---
 
 # Downloads and file access

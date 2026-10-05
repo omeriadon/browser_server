@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Architecture and ownership
+nav_order: 1
+parent: Browser guides
 ---
 
 # Architecture and ownership

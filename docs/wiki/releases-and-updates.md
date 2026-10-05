@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Releases, signing, and updates
+nav_order: 10
+parent: Browser guides
 ---
 
 # Releases, signing, and updates

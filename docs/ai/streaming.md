@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Streaming
+nav_order: 2
+parent: AI features
 ---
 
 # Streaming and single responses

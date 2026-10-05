@@ -1,6 +1,8 @@
 ---
 layout: default
-title: Adding an AI feature
+title: Adding a feature
+nav_order: 1
+parent: AI features
 ---
 
 # Adding an AI feature

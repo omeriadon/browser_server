@@ -1,6 +1,7 @@
 ---
 layout: default
-title: Astra wiki
+title: Browser guides
+nav_order: 2
 ---
 
 # Astra wiki

@@ -1,6 +1,7 @@
 ---
 layout: default
-title: Server API and deployment
+title: Server API
+nav_order: 4
 ---
 
 # Server API and deployment

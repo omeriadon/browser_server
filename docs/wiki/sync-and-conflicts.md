@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Sync and conflict resolution
+nav_order: 3
+parent: Browser guides
 ---
 
 # Sync and conflict resolution

@@ -1,6 +1,7 @@
 ---
 layout: default
 title: AI features
+nav_order: 3
 ---
 
 # AI features

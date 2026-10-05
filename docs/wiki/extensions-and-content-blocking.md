@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Extensions and content blocking
+nav_order: 7
+parent: Browser guides
 ---
 
 # Extensions and content blocking

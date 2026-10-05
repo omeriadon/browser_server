@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Server configuration and operations
+nav_order: 12
+parent: Browser guides
 ---
 
 # Server configuration and operations

@@ -1,6 +1,8 @@
 ---
 layout: default
 title: Settings, search, and data import
+nav_order: 9
+parent: Browser guides
 ---
 
 # Settings, search, and data import
