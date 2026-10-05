@@ -24,6 +24,8 @@ func routes(_ app: Application) throws {
         .grouped(BrowserSessionAuthenticator(authentication: app.browserAuthentication))
         .grouped(AuthenticatedBrowserUser.guardMiddleware())
 
+    aiRoutes(authenticated, service: .configured())
+
     authenticated.get("sync") { request async throws -> [SyncSnapshotResponse] in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         return try await SyncSnapshot.query(on: request.db)

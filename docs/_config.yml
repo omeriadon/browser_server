@@ -1,0 +1,10 @@
+title: Astra AI documentation
+description: Feature development, streaming, and the authenticated Astra AI server
+theme: jekyll-theme-minimal
+markdown: kramdown
+baseurl: /browser_server
+url: https://omeriadon.github.io
+exclude:
+  - README.md
+plugins:
+  - jekyll-relative-links

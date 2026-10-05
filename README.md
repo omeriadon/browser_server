@@ -112,3 +112,44 @@ The `prod` remote is `rackmill:/var/repo/browser-sync.git`. Push with
 `git push prod HEAD:main`. Its installed `deploy/post-receive` hook checks out
 `main`, builds the release executable, runs migrations, and restarts PM2.
 Build or migration failures stop deployment before the process restarts.
+
+## AI provider
+
+`POST /v1/ai/generate` and `POST /v1/ai/stream` require the same verified bearer session as sync.
+Set `OPENROUTER_API_KEY` in the protected environment JSON for production or
+the ignored `.env` for local development. Do not put it in app resources,
+source files, Docker images, or shared settings. Restrict secret files to mode
+`0600`. The existing PM2 configuration loads the JSON into the service; Docker
+Compose forwards the environment variables at runtime.
+
+`OPENROUTER_ALLOWED_MODELS` is a comma-separated model allowlist, defaulting
+to `openai/gpt-4o-mini`. An empty allowlist disables every model. Missing or
+empty keys disable cloud generation with HTTP 503 without disabling sync.
+
+The request contains `modelID`, `instructions`, `prompt`, and
+`maximumResponseTokens`; the response contains `text`. Request bodies are
+limited to 64 KiB, combined prompt/instructions to 32 KiB UTF-8, and output
+to 1–2,048 tokens. Unknown model IDs are rejected before contacting the
+provider. Provider requests time out after 75 seconds; failures are sanitized
+and never retried automatically. Truncated or empty completions are rejected.
+
+Usage limits count attempts: 10 per minute and 100 per 24-hour window per
+account, two concurrent requests per account, and eight across the process.
+These limits are process-local and reset when the service restarts. Use a
+shared quota store before deploying multiple workers or replicas. Set an
+OpenRouter key spending limit separately for an account-wide cost ceiling.
+
+The proxy uses OpenRouter's documented
+[chat completion API](https://openrouter.ai/docs/api/api-reference/chat/create-a-chat-completion).
+AI tests use a fake provider and require neither a real key nor PostgreSQL.
+
+## Documentation
+
+[Published AI documentation](https://omeriadon.github.io/browser_server/)
+includes [feature development](docs/ai/adding-features.md),
+[streaming semantics](docs/ai/streaming.md), and the
+[server API](docs/server-api.md). GitHub Pages builds `main:/docs` with Jekyll.
+
+The streaming endpoint sends cumulative text snapshots and a required final
+event, or a sanitized terminal error. Both endpoints share authentication and
+quotas. SSE responses disable Nginx buffering through `X-Accel-Buffering: no`.

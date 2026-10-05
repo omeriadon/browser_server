@@ -16,6 +16,7 @@ let package = Package(
         // 🔵 Non-blocking, event-driven networking for Swift. Used for custom executors
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.101.0"),
         .package(url: "https://github.com/vapor/jwt-kit.git", from: "5.7.1"),
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.36.1"),
     ],
     targets: [
         .executableTarget(
@@ -27,6 +28,7 @@ let package = Package(
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "JWTKit", package: "jwt-kit"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
             ],
             swiftSettings: swiftSettings
         ),
@@ -34,6 +36,7 @@ let package = Package(
             name: "brower_serverTests",
             dependencies: [
                 .target(name: "brower_server"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
             ],
             swiftSettings: swiftSettings
         )

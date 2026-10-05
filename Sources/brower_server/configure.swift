@@ -24,6 +24,7 @@ func configure(_ app: Application) async throws {
     ), as: .psql)
 
     app.browserAuthentication = try await BrowserAuthentication.make(for: app.environment)
+    app.http.client.configuration.redirectConfiguration = .disallow
 
     app.migrations.add(CreateSyncSnapshot())
 
