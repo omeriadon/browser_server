@@ -1,5 +1,5 @@
-title: Astra AI documentation
-description: Feature development, streaming, and the authenticated Astra AI server
+title: Astra documentation
+description: Browser architecture, feature development, privacy, sync, and operations
 theme: jekyll-theme-minimal
 markdown: kramdown
 baseurl: /browser_server

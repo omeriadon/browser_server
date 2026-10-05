@@ -1,14 +1,18 @@
 ---
 layout: default
-title: Astra AI documentation
+title: Astra documentation
 ---
 
-# Astra AI documentation
+# Astra documentation
+
+The [wiki](wiki/index.md) covers browser architecture, storage, sync, privacy,
+downloads, extensions, website apps, releases, and server operations.
 
 Astra has one feature interface for Apple Intelligence on-device and
 OpenRouter through its authenticated server. Both providers support single
 responses and streaming.
 
+- [Browser and server wiki](wiki/index.md)
 - [AI system overview](ai-features.md)
 - [Adding a feature](ai/adding-features.md)
 - [Streaming and single responses](ai/streaming.md)

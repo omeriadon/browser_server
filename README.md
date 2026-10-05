@@ -145,7 +145,7 @@ AI tests use a fake provider and require neither a real key nor PostgreSQL.
 
 ## Documentation
 
-[Published AI documentation](https://omeriadon.github.io/browser_server/)
+[Published documentation](https://omeriadon.github.io/browser_server/)
 includes [feature development](docs/ai/adding-features.md),
 [streaming semantics](docs/ai/streaming.md), and the
 [server API](docs/server-api.md). GitHub Pages builds `main:/docs` with Jekyll.
@@ -153,3 +153,7 @@ includes [feature development](docs/ai/adding-features.md),
 The streaming endpoint sends cumulative text snapshots and a required final
 event, or a sanitized terminal error. Both endpoints share authentication and
 quotas. SSE responses disable Nginx buffering through `X-Accel-Buffering: no`.
+
+[Browser and server wiki](https://omeriadon.github.io/browser_server/wiki/)
+covers architecture, storage/recovery, sync, authentication, privacy, downloads,
+extensions, website apps, settings/search, releases, diagnostics, and operations.
