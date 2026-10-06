@@ -27,6 +27,8 @@ func configure(_ app: Application) async throws {
     app.http.client.configuration.redirectConfiguration = .disallow
 
     app.migrations.add(CreateSyncSnapshot())
+    app.migrations.add(CreateWebsiteMonitors())
+    app.lifecycle.use(WebsiteMonitorLifecycle())
 
     // register routes
     try routes(app)

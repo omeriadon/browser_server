@@ -25,6 +25,7 @@ func routes(_ app: Application) throws {
         .grouped(AuthenticatedBrowserUser.guardMiddleware())
 
     aiRoutes(authenticated, service: .configured())
+    websiteMonitorRoutes(authenticated)
 
     authenticated.get("sync") { request async throws -> [SyncSnapshotResponse] in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)

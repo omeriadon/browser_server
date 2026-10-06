@@ -8,6 +8,7 @@ struct BrowserAIRequest: Content {
     let prompt: String
     let maximumResponseTokens: Int
     let images: [BrowserAIImage]?
+    var webSearch: Bool? = nil
 
     init(modelID: String, instructions: String, prompt: String, maximumResponseTokens: Int, images: [BrowserAIImage]? = nil) {
         self.modelID = modelID
@@ -127,7 +128,8 @@ actor BrowserAIService {
                         .init(role: "system", content: body.instructions),
                         .init(role: "user", prompt: body.prompt, images: body.images)
                     ],
-                    maxTokens: body.maximumResponseTokens
+                    maxTokens: body.maximumResponseTokens,
+                    plugins: body.webSearch == true ? [.init(id: "web", maxResults: 3)] : nil
                 ))
             }
         } catch {
@@ -206,7 +208,8 @@ actor BrowserAIService {
                     .init(role: "user", prompt: body.prompt, images: body.images)
                 ],
                 maxTokens: body.maximumResponseTokens,
-                stream: true
+                stream: true,
+                plugins: body.webSearch == true ? [.init(id: "web", maxResults: 3)] : nil
             )))
             upstream = try await execute(request)
             if upstream.status == .tooManyRequests {
@@ -257,6 +260,14 @@ actor BrowserAIService {
 }
 
 private struct OpenRouterRequest: Content {
+    struct Plugin: Content {
+        let id: String
+        let maxResults: Int
+        enum CodingKeys: String, CodingKey {
+            case id
+            case maxResults = "max_results"
+        }
+    }
     struct Message: Content {
         struct Part: Content {
             struct ImageURL: Content { let url: String }
@@ -318,6 +329,7 @@ private struct OpenRouterRequest: Content {
     let messages: [Message]
     let maxTokens: Int
     var stream: Bool = false
+    var plugins: [Plugin]? = nil
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -325,6 +337,7 @@ private struct OpenRouterRequest: Content {
         case reasoning
         case maxTokens = "max_tokens"
         case stream
+        case plugins
     }
 }
 

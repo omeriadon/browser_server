@@ -115,6 +115,24 @@ Build or migration failures stop deployment before the process restarts.
 
 ## AI provider
 
+## Website monitoring
+
+Authenticated `/v1/monitors` routes create, list, pause, and delete durable website
+monitors. Daily, weekly, fortnightly, and calendar-monthly intervals are supported.
+The server checks due monitors every minute, independent of any connected Mac.
+Matched results remain available for clients to deliver notifications and pinned
+space tabs when they reconnect. Notification delivery while Astra is quit requires
+an APNs configuration; results are not lost when no client is running.
+
+Monitoring uses OpenRouter only (`MONITOR_OPENROUTER_MODEL`, default
+`openai/gpt-4o-mini`) and the existing account quotas. Public page text is extracted
+with SwiftSoup. `/usr/bin/curl` must be installed: connections pin a validated public
+DNS address, retain HTTPS hostname verification, check every redirect, and reject
+local/private/reserved addresses, credentials, and nonstandard ports. Fetches have
+size/time limits. Browser cookies and private page data are not sent to the server.
+
+AI requests can opt into the OpenRouter web-search plugin with `webSearch: true`.
+
 `POST /v1/ai/generate` and `POST /v1/ai/stream` require the same verified bearer session as sync.
 Set `OPENROUTER_API_KEY` in the protected environment JSON for production or
 the ignored `.env` for local development. Do not put it in app resources,
