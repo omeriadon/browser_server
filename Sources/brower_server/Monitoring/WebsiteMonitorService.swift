@@ -127,7 +127,7 @@ final class WebsiteMonitorLifecycle: LifecycleHandler, @unchecked Sendable {
     private var task: Task<Void, Never>?
 
     func didBoot(_ application: Application) throws {
-        guard application.environment != .testing else { return }
+        guard application.environment != .testing, CommandLine.arguments.contains("serve") else { return }
         task = Task {
             let worker = WebsiteMonitorWorker(app: application)
             while !Task.isCancelled {
