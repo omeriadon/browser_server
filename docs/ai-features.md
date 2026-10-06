@@ -6,9 +6,10 @@ nav_order: 3
 
 # AI features
 
-`BrowserAI.shared` runs isolated AI features with single and streaming responses. Both providers
-require an Astra account session. Apple Intelligence runs locally; OpenRouter
-runs through the configured Astra server. Providers never switch automatically.
+`BrowserAI.shared` runs isolated AI features with single and streaming responses. On-device Foundation Models, PCC, and OpenRouter require an Astra account
+session. On-device generation runs locally; PCC uses Apple’s private cloud;
+OpenRouter runs through the configured Astra server. CLI overrides use their
+existing signed-in account instead. Providers never switch automatically.
 Signing out or changing servers invalidates pending results.
 
 ## Guides
@@ -45,14 +46,17 @@ feature owns decisions about what data may leave the device. Cloud features
 must be deliberate user actions with clear data disclosure; do not silently
 send private page content or automatically fall back from on-device to cloud.
 
-Prompts and instructions have a combined 32 KiB UTF-8 limit. Output limits are
+OpenRouter prompts have a 16 MiB UTF-8 transport ceiling, with instructions limited
+to 32 KiB and a 20 MiB encoded request-body ceiling. There is no app token cap for chat.
+Provider context windows still apply. Output limits are
 1–2,048 tokens. Handle `BrowserAIError`, provider errors, and task cancellation
 at the feature's caller. Treat output as untrusted data; validation belongs in
 `output(from:)`, before applying any change.
 
-Download naming remains on-device and retains the existing setting, filename
+Default download naming remains on-device and retains the existing setting, filename
 sanitization, extension preservation, collision handling, and private-download
-exclusion. Signed-out users now keep the original downloaded filename.
+exclusion. With the default preset, signed-out users keep the original downloaded filename.
+An explicit Codex/Claude override also applies to download naming.
 
 ## Server
 

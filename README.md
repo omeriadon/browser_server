@@ -123,12 +123,14 @@ source files, Docker images, or shared settings. Restrict secret files to mode
 Compose forwards the environment variables at runtime.
 
 `OPENROUTER_ALLOWED_MODELS` is a comma-separated model allowlist, defaulting
-to `openai/gpt-4o-mini`. An empty allowlist disables every model. Missing or
+to `inclusionai/ling-3.1-flash,openai/gpt-4o-mini`. An empty allowlist disables every model. Missing or
 empty keys disable cloud generation with HTTP 503 without disabling sync.
 
 The request contains `modelID`, `instructions`, `prompt`, and
-`maximumResponseTokens`; the response contains `text`. Request bodies are
-limited to 64 KiB, combined prompt/instructions to 32 KiB UTF-8, and output
+`maximumResponseTokens`, and optional `images` (name, mediaType, base64 data); the response contains `text`.
+Images are forwarded as native OpenRouter image content. At most eight images totaling
+10 MiB are accepted, and MIME types are checked against their file signatures. Request bodies are
+limited to 20 MiB, prompts to 16 MiB UTF-8, instructions to 32 KiB UTF-8, and output
 to 1–2,048 tokens. Unknown model IDs are rejected before contacting the
 provider. Provider requests time out after 75 seconds; failures are sanitized
 and never retried automatically. Truncated or empty completions are rejected.

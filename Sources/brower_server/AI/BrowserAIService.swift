@@ -7,16 +7,51 @@ struct BrowserAIRequest: Content {
     let instructions: String
     let prompt: String
     let maximumResponseTokens: Int
+    let images: [BrowserAIImage]?
+
+    init(modelID: String, instructions: String, prompt: String, maximumResponseTokens: Int, images: [BrowserAIImage]? = nil) {
+        self.modelID = modelID
+        self.instructions = instructions
+        self.prompt = prompt
+        self.maximumResponseTokens = maximumResponseTokens
+        self.images = images
+    }
 
     func validate(allowedModels: Set<String>) throws {
         guard allowedModels.contains(modelID) else {
             throw Abort(.badRequest, reason: "This AI model is not enabled on the server.")
         }
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              instructions.utf8.count + prompt.utf8.count <= 32_768,
+              instructions.utf8.count <= 32_768,
+              prompt.utf8.count <= 16_777_216,
               (1...2_048).contains(maximumResponseTokens)
         else {
             throw Abort(.badRequest, reason: "Invalid AI prompt or output limit.")
+        }
+        if let images {
+            guard images.count <= 8,
+                  images.reduce(0, { $0 + $1.data.count }) <= 10_485_760,
+                  images.allSatisfy(\.isValid) else {
+                throw Abort(.badRequest, reason: "Attach at most eight PNG, JPEG, GIF, or WebP images totaling 10 MB.")
+            }
+        }
+    }
+}
+
+struct BrowserAIImage: Content {
+    let name: String
+    let mediaType: String
+    let data: Data
+
+    var isValid: Bool {
+        guard !name.isEmpty, name.utf8.count <= 240, !data.isEmpty else { return false }
+        let prefix = [UInt8](data.prefix(12))
+        switch mediaType {
+        case "image/png": return prefix.starts(with: [137, 80, 78, 71, 13, 10, 26, 10])
+        case "image/jpeg": return prefix.starts(with: [255, 216, 255])
+        case "image/gif": return prefix.starts(with: Array("GIF8".utf8))
+        case "image/webp": return prefix.starts(with: Array("RIFF".utf8)) && Array(prefix.dropFirst(8)) == Array("WEBP".utf8)
+        default: return false
         }
     }
 }
@@ -26,12 +61,12 @@ struct BrowserAIResponse: Content {
 }
 
 func aiRoutes(_ routes: any RoutesBuilder, service: BrowserAIService) {
-    routes.on(.POST, ["ai", "generate"], body: .collect(maxSize: "64kb")) { request async throws -> BrowserAIResponse in
+    routes.on(.POST, ["ai", "generate"], body: .collect(maxSize: "20mb")) { request async throws -> BrowserAIResponse in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         let body = try request.content.decode(BrowserAIRequest.self)
         return try await service.generate(body, subject: user.appleSubject, client: request.client)
     }
-    routes.on(.POST, ["ai", "stream"], body: .collect(maxSize: "64kb")) { request async throws -> Response in
+    routes.on(.POST, ["ai", "stream"], body: .collect(maxSize: "20mb")) { request async throws -> Response in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         let body = try request.content.decode(BrowserAIRequest.self)
         return try await service.stream(body, subject: user.appleSubject) { upstream in
@@ -61,7 +96,7 @@ actor BrowserAIService {
     }
 
     static func configured() -> BrowserAIService {
-        let models = (Environment.get("OPENROUTER_ALLOWED_MODELS") ?? "openai/gpt-4o-mini")
+        let models = (Environment.get("OPENROUTER_ALLOWED_MODELS") ?? "inclusionai/ling-3.1-flash,openai/gpt-4o-mini")
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -90,7 +125,7 @@ actor BrowserAIService {
                     model: body.modelID,
                     messages: [
                         .init(role: "system", content: body.instructions),
-                        .init(role: "user", content: body.prompt)
+                        .init(role: "user", prompt: body.prompt, images: body.images)
                     ],
                     maxTokens: body.maximumResponseTokens
                 ))
@@ -168,7 +203,7 @@ actor BrowserAIService {
                 model: body.modelID,
                 messages: [
                     .init(role: "system", content: body.instructions),
-                    .init(role: "user", content: body.prompt)
+                    .init(role: "user", prompt: body.prompt, images: body.images)
                 ],
                 maxTokens: body.maximumResponseTokens,
                 stream: true
@@ -223,10 +258,62 @@ actor BrowserAIService {
 
 private struct OpenRouterRequest: Content {
     struct Message: Content {
+        struct Part: Content {
+            struct ImageURL: Content { let url: String }
+            let type: String
+            var text: String?
+            var imageURL: ImageURL?
+
+            enum CodingKeys: String, CodingKey {
+                case type, text
+                case imageURL = "image_url"
+            }
+        }
+
+        enum Body: Content {
+            case text(String)
+            case parts([Part])
+
+            init(from decoder: any Decoder) throws {
+                let value = try decoder.singleValueContainer()
+                if let text = try? value.decode(String.self) { self = .text(text) }
+                else { self = .parts(try value.decode([Part].self)) }
+            }
+
+            func encode(to encoder: any Encoder) throws {
+                var value = encoder.singleValueContainer()
+                switch self {
+                case let .text(text): try value.encode(text)
+                case let .parts(parts): try value.encode(parts)
+                }
+            }
+        }
+
         let role: String
-        let content: String
+        let content: Body
+
+        init(role: String, content: String) {
+            self.role = role
+            self.content = .text(content)
+        }
+
+        init(role: String, prompt: String, images: [BrowserAIImage]?) {
+            self.role = role
+            if let images, !images.isEmpty {
+                content = .parts([Part(type: "text", text: prompt)] + images.map {
+                    Part(type: "image_url", imageURL: .init(url: "data:\($0.mediaType);base64,\($0.data.base64EncodedString())"))
+                })
+            } else {
+                content = .text(prompt)
+            }
+        }
     }
 
+    struct Reasoning: Content {
+        let effort: String
+    }
+
+    let reasoning = Reasoning(effort: "low")
     let model: String
     let messages: [Message]
     let maxTokens: Int
@@ -235,6 +322,7 @@ private struct OpenRouterRequest: Content {
     enum CodingKeys: String, CodingKey {
         case model
         case messages
+        case reasoning
         case maxTokens = "max_tokens"
         case stream
     }

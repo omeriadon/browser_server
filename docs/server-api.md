@@ -35,7 +35,8 @@ Both endpoints accept `Content-Type: application/json`:
 
 ## Limits and status codes
 
-Request bodies: 64 KiB. Combined prompt and instructions: 32 KiB UTF-8.
+Request bodies: 20 MiB. Prompt: 16 MiB UTF-8. Instructions: 32 KiB UTF-8.
+The proxy requests low reasoning; model context limits still apply.
 Output: 1–2,048 tokens. Models must match `OPENROUTER_ALLOWED_MODELS`.
 Provider requests have a 75-second total timeout. No automatic retries.
 

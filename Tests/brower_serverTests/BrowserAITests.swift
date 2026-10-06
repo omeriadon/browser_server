@@ -12,9 +12,28 @@ final class BrowserAITests: XCTestCase {
         XCTAssertNoThrow(try body().validate(allowedModels: models))
         XCTAssertThrowsError(try body(model: "unapproved/model").validate(allowedModels: models))
         XCTAssertThrowsError(try body(prompt: " \n ").validate(allowedModels: models))
-        XCTAssertThrowsError(try body(prompt: String(repeating: "a", count: 32_769)).validate(allowedModels: models))
+        XCTAssertNoThrow(try body(prompt: String(repeating: "a", count: 200_000)).validate(allowedModels: models))
+        XCTAssertThrowsError(try body(prompt: String(repeating: "a", count: 16_777_217)).validate(allowedModels: models))
         XCTAssertThrowsError(try body(tokens: 0).validate(allowedModels: models))
         XCTAssertThrowsError(try body(tokens: 2_049).validate(allowedModels: models))
+    }
+
+    func testImagesReachProviderAndAreValidated() async throws {
+        let png = Data([137, 80, 78, 71, 13, 10, 26, 10])
+        let image = BrowserAIImage(name: "diagram.png", mediaType: "image/png", data: png)
+        let body = BrowserAIRequest(modelID: model, instructions: "Describe it", prompt: "What is shown?", maximumResponseTokens: 128, images: [image])
+        let client = AIClient(responseText: "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{\"content\":\"A diagram\"}}]}")
+        let service = BrowserAIService(apiKey: "test-key", allowedModels: [model])
+        _ = try await service.generate(body, subject: "user", client: client)
+        let request = try XCTUnwrap(client.lastRequest)
+        let buffer = try XCTUnwrap(request.body)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(buffer.readableBytesView)) as? [String: Any])
+        let messages = try XCTUnwrap(json["messages"] as? [[String: Any]])
+        let parts = try XCTUnwrap(messages.last?["content"] as? [[String: Any]])
+        XCTAssertEqual(parts.first?["text"] as? String, "What is shown?")
+        XCTAssertEqual((parts.last?["image_url"] as? [String: String])?["url"], "data:image/png;base64," + png.base64EncodedString())
+        let invalid = BrowserAIRequest(modelID: model, instructions: "Describe", prompt: "Question", maximumResponseTokens: 128, images: [.init(name: "bad.png", mediaType: "image/png", data: Data("not an image".utf8))])
+        XCTAssertThrowsError(try invalid.validate(allowedModels: [model]))
     }
 
     func testAIEndpointRequiresVerifiedSession() async throws {
@@ -57,6 +76,7 @@ final class BrowserAITests: XCTestCase {
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(json["model"] as? String, model)
         XCTAssertEqual(json["max_tokens"] as? Int, 128)
+        XCTAssertEqual((json["reasoning"] as? [String: String])?["effort"], "low")
         let messages = try XCTUnwrap(json["messages"] as? [[String: String]])
         XCTAssertEqual(messages.map { $0["role"] }, ["system", "user"])
         XCTAssertEqual(messages.last?["content"], "Name this download")
