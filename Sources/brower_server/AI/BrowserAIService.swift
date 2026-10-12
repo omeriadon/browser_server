@@ -169,10 +169,11 @@ actor BrowserAIService {
                     logger: logger,
                     requestID: requestID,
                     operation: "ai.generate.provider",
-                    metadata: requestMetadata(body, subject: subject, extra: ["provider_status": .stringConvertible(response.status.code), "provider_body": .string(DiagnosticFormatter.sanitize(detail))])
+                    metadata: requestMetadata(body, subject: subject, extra: ["provider_status": .stringConvertible(response.status.code), "provider_body": .string(DiagnosticFormatter.sanitize(detail, redacting: [apiKey]))]),
+                    redacting: [apiKey]
                 )
             }
-            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
+            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response (upstream HTTP \(response.status.code)).")
         }
         let completion: OpenRouterResponse
         do {
@@ -193,7 +194,7 @@ actor BrowserAIService {
                     redacting: [apiKey]
                 )
             }
-            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
+            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response (upstream HTTP \(response.status.code)).")
         }
         guard let choice = completion.choices.first,
               choice.finishReason == "stop",
@@ -213,7 +214,7 @@ actor BrowserAIService {
                     redacting: [apiKey]
                 )
             }
-            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
+            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response (upstream HTTP \(response.status.code)).")
         }
         return BrowserAIResponse(text: text)
     }
@@ -309,7 +310,7 @@ actor BrowserAIService {
                 "provider_content_type": .string(upstream.headers.first(name: "Content-Type") ?? "missing"),
                 "provider_request_id": .string(upstream.headers.first(name: "X-Request-ID") ?? "missing"),
             ]
-            if upstream.status != .ok {
+            if upstream.status != .ok || upstream.headers.first(name: "Content-Type")?.lowercased().hasPrefix("text/event-stream") != true {
                 do {
                     let buffer = try await upstream.body.collect(upTo: 16_384)
                     providerMetadata["provider_body"] = .string(DiagnosticFormatter.sanitize(String(decoding: buffer.readableBytesView, as: UTF8.self), redacting: [apiKey]))
@@ -330,7 +331,7 @@ actor BrowserAIService {
             if let logger {
                 DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.stream.start", metadata: requestMetadata(body, subject: subject, extra: providerMetadata), redacting: [apiKey])
             }
-            if let abort = error as? Abort, abort.status == .tooManyRequests {
+            if let abort = error as? Abort {
                 throw abort
             }
             throw Abort(.badGateway, reason: "The AI provider could not start generation.")
