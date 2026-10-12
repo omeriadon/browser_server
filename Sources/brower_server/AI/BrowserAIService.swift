@@ -65,12 +65,12 @@ func aiRoutes(_ routes: any RoutesBuilder, service: BrowserAIService) {
     routes.on(.POST, ["ai", "generate"], body: .collect(maxSize: "20mb")) { request async throws -> BrowserAIResponse in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         let body = try request.content.decode(BrowserAIRequest.self)
-        return try await service.generate(body, subject: user.appleSubject, client: request.client)
+        return try await service.generate(body, subject: user.appleSubject, client: request.client, logger: request.logger)
     }
     routes.on(.POST, ["ai", "stream"], body: .collect(maxSize: "20mb")) { request async throws -> Response in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         let body = try request.content.decode(BrowserAIRequest.self)
-        return try await service.stream(body, subject: user.appleSubject) { upstream in
+        return try await service.stream(body, subject: user.appleSubject, logger: request.logger) { upstream in
             try await request.application.http.client.shared.execute(upstream, timeout: .seconds(75))
         }
     }
@@ -107,8 +107,9 @@ actor BrowserAIService {
         )
     }
 
-    func generate(_ body: BrowserAIRequest, subject: String, client: any Client) async throws -> BrowserAIResponse {
+    func generate(_ body: BrowserAIRequest, subject: String, client: any Client, logger: Logger = Logger(label: "astra.default-ai")) async throws -> BrowserAIResponse {
         try body.validate(allowedModels: allowedModels)
+        logger.info("ai.generate.started model=\(body.modelID) prompt_bytes=\(body.prompt.utf8.count) image_count=\(body.images?.count ?? 0) max_tokens=\(body.maximumResponseTokens)")
         guard let apiKey, !apiKey.isEmpty else {
             throw Abort(.serviceUnavailable, reason: "Cloud AI is not configured.")
         }
@@ -133,8 +134,20 @@ actor BrowserAIService {
                 ))
             }
         } catch {
+            logger.error("ai.generate.upstream-transport-failed model=\(body.modelID)")
+            #if DEBUG
+            logger.debug("ai.generate.upstream-transport-error \(String(describing: error))")
+            #endif
             // Do not expose provider errors, headers, prompts, or credentials.
             throw Abort(.badGateway, reason: "The AI provider could not be reached.")
+        }
+        logger.info("ai.generate.upstream-response model=\(body.modelID) status=\(response.status.code) bytes=\(response.body?.readableBytes ?? 0)")
+        if response.status != .ok {
+            logger.error("ai.generate.upstream-http-failed model=\(body.modelID) status=\(response.status.code)")
+            #if DEBUG
+            let bytes = response.body?.readableBytes ?? 0
+            logger.debug("ai.generate.upstream-error-body model=\(body.modelID) body=\(response.body?.getString(at: 0, length: min(bytes, 8192)) ?? "<empty>")")
+            #endif
         }
         if response.status == .tooManyRequests {
             throw Abort(.tooManyRequests, reason: "The AI provider is busy. Try again later.")
@@ -148,8 +161,14 @@ actor BrowserAIService {
               let text = choice.message.content,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else {
-            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
+            logger.error("ai.generate.invalid-upstream-response model=\(body.modelID) status=\(response.status.code)")
+            #if DEBUG
+            let bytes = response.body?.readableBytes ?? 0
+            logger.debug("ai.generate.invalid-upstream-body model=\(body.modelID) body=\(response.body?.getString(at: 0, length: min(bytes, 8192)) ?? "<empty>")")
+            #endif
+            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response (upstream HTTP \(response.status.code)).")
         }
+        logger.info("ai.generate.completed model=\(body.modelID) text_bytes=\(text.utf8.count)")
         return BrowserAIResponse(text: text)
     }
 
@@ -186,9 +205,11 @@ actor BrowserAIService {
     func stream(
         _ body: BrowserAIRequest,
         subject: String,
+        logger: Logger = Logger(label: "astra.default-ai"),
         execute: @Sendable (HTTPClientRequest) async throws -> HTTPClientResponse
     ) async throws -> Response {
         try body.validate(allowedModels: allowedModels)
+        logger.info("ai.stream.started model=\(body.modelID) prompt_bytes=\(body.prompt.utf8.count) image_count=\(body.images?.count ?? 0) max_tokens=\(body.maximumResponseTokens)")
         guard let apiKey, !apiKey.isEmpty else {
             throw Abort(.serviceUnavailable, reason: "Cloud AI is not configured.")
         }
@@ -212,6 +233,18 @@ actor BrowserAIService {
                 plugins: body.webSearch == true ? [.init(id: "web", maxResults: 3)] : nil
             )))
             upstream = try await execute(request)
+            logger.info("ai.stream.upstream-headers model=\(body.modelID) status=\(upstream.status.code) content_type=\(upstream.headers.first(name: "Content-Type") ?? "<missing>")")
+            if upstream.status != .ok || upstream.headers.first(name: "Content-Type")?.lowercased().hasPrefix("text/event-stream") != true {
+                logger.error("ai.stream.upstream-rejected model=\(body.modelID) status=\(upstream.status.code)")
+                #if DEBUG
+                var detail = Data()
+                for try await buffer in upstream.body {
+                    detail.append(contentsOf: buffer.readableBytesView.prefix(max(0, 8192 - detail.count)))
+                    if detail.count >= 8192 { break }
+                }
+                logger.debug("ai.stream.upstream-error-body model=\(body.modelID) body=\(String(decoding: detail, as: UTF8.self))")
+                #endif
+            }
             if upstream.status == .tooManyRequests {
                 throw Abort(.tooManyRequests, reason: "The AI provider is busy. Try again later.")
             }
@@ -222,7 +255,11 @@ actor BrowserAIService {
             }
         } catch {
             release(for: subject)
-            if let abort = error as? Abort, abort.status == .tooManyRequests {
+            logger.error("ai.stream.start-failed model=\(body.modelID) category=\(String(describing: type(of: error)))")
+            #if DEBUG
+            logger.debug("ai.stream.start-error-detail \(String(describing: error))")
+            #endif
+            if let abort = error as? Abort {
                 throw abort
             }
             throw Abort(.badGateway, reason: "The AI provider could not start generation.")
@@ -232,15 +269,29 @@ actor BrowserAIService {
         response.headers.replaceOrAdd(name: "Content-Type", value: "text/event-stream; charset=utf-8")
         response.headers.replaceOrAdd(name: "Cache-Control", value: "no-cache, no-transform")
         response.headers.replaceOrAdd(name: "X-Accel-Buffering", value: "no")
+        let modelID = body.modelID
         response.body = .init(managedAsyncStream: { writer in
+            var events = 0
+            var bytesRead = 0
             do {
                 var parser = BrowserSSEParser()
                 var decoder = OpenRouterStreamDecoder()
                 for try await buffer in upstream.body {
                     try Task.checkCancellation()
+                    bytesRead += buffer.readableBytes
                     for data in try parser.feed(buffer) {
-                        if let event = try decoder.consume(data) {
-                            try await writer.writeBuffer(event.buffer())
+                        do {
+                            if let event = try decoder.consume(data) {
+                                events += 1
+                                logger.debug("ai.stream.event model=\(modelID) event=\(events) cumulative_text_bytes=\(event.text?.utf8.count ?? 0) finished=\(event.isFinal ?? false)")
+                                try await writer.writeBuffer(event.buffer())
+                            }
+                        } catch {
+                            logger.error("ai.stream.decode-failed model=\(modelID) event_bytes=\(data.utf8.count)")
+                            #if DEBUG
+                            logger.debug("ai.stream.bad-provider-event model=\(modelID) body=\(String(data.prefix(8192)))")
+                            #endif
+                            throw error
                         }
                     }
                     if decoder.isComplete { break }
@@ -248,7 +299,12 @@ actor BrowserAIService {
                 guard decoder.isComplete else {
                     throw Abort(.badGateway, reason: "Incomplete AI stream.")
                 }
+                logger.info("ai.stream.completed model=\(modelID) events=\(events) upstream_bytes=\(bytesRead)")
             } catch {
+                logger.error("ai.stream.failed model=\(modelID) events=\(events) upstream_bytes=\(bytesRead) error_type=\(String(describing: type(of: error)))")
+                #if DEBUG
+                logger.debug("ai.stream.error-detail model=\(modelID) error=\(String(describing: error))")
+                #endif
                 // A 200 stream can fail later. Never forward upstream error details.
                 let event = BrowserAIStreamEvent(text: nil, isFinal: nil, error: "Cloud AI generation failed.")
                 try? await writer.writeBuffer(event.buffer())
