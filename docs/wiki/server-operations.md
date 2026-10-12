@@ -55,3 +55,15 @@ Related: [AI API](../server-api.md), [sync](sync-and-conflicts.md),
 - [BrowserAIService.swift](https://github.com/omeriadon/browser_server/blob/2b6d5583994b3d4c6a5b1e417b7e8088cbc925d5/Sources/brower_server/AI/BrowserAIService.swift)
 - [post-receive](https://github.com/omeriadon/browser_server/blob/2b6d5583994b3d4c6a5b1e417b7e8088cbc925d5/deploy/post-receive)
 - [ecosystem.config.cjs](https://github.com/omeriadon/browser_server/blob/2b6d5583994b3d4c6a5b1e417b7e8088cbc925d5/deploy/ecosystem.config.cjs)
+## Server diagnostics
+
+Each request receives an `X-Request-ID` response header. Failed requests are logged with that identifier, operation, status, elapsed time, and a bounded error chain. Successful requests do not produce request access logs. Provider and database failures retain their original error type, domain, code, and decoding path in private logs while public responses keep their existing sanitized reason.
+
+Diagnostic values are capped and redact identity tokens, session tokens, API keys, passwords, authorization and cookie values, bearer credentials, and URL query strings. Request and provider payload context may be recorded when it is useful for diagnosis; never add credentials to log metadata. A stream that has already returned HTTP 200 reports its failure to the server log and sends the existing generic SSE error event to the client.
+
+Use the request ID to correlate an API response with its middleware and provider records. Background website monitor failures use the monitor ID as their correlation ID and only emit diagnostics on failure. Repeated successful monitor checks remain quiet.
+
+
+Failure records include source location, original error descriptions, bounded userInfo, nested causes, Codable kind/path/type, quota counters, model/account context, prompt/instruction excerpts, provider response context, and SSE progress/last-frame context where available. Each value is capped at 4,000 UTF-8 bytes with a truncation marker; each chain entry has a smaller budget so long outer descriptions do not obscure underlying causes. Reusable known credentials are also explicitly scrubbed at authentication/provider boundaries.
+
+Request/body, account, website text, condition, and model-output excerpts can contain sensitive user information. These records belong in the private server log store. Binary image content is summarized by count and size rather than dumped. Routine successful requests and monitor checks remain quiet.

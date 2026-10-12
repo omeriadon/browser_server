@@ -1,0 +1,9 @@
+# Server failure diagnostics audit
+
+Reviewed every file under `Sources/brower_server` plus the deployment scripts. Authentication, sync queries/writes and monitor routes run behind the failure middleware. Startup/configuration/migration/command errors run through the entrypoint formatter. Model and migration declarations contain no swallowed runtime failures requiring separate logging. Deployment build/migration commands already preserve errors with `pipefail` and checked subprocess results; no deployment changes were made.
+
+The AI service preserves validation/configuration/quota context, provider transport/HTTP/decode/completion failures, and stream failures after HTTP 200. The monitor worker logs the original failure before its fallible error-state persistence. Its reader preserves DNS status, pinned address, curl exit/stderr, and website HTTP status. Background records correlate by monitor ID; HTTP records correlate through a generated, returned UUID.
+
+Success access logs were removed. One request summary and one original boundary record may describe different aspects of the same failure; AI payloads are not repeated in the request summary. Expected cancellation stays quiet. Cleanup of temporary files remains best effort. Captures are bounded and redact credential fields, recognizable credential strings, and explicitly known authentication/provider secrets; arbitrary private account/prompt/page/response context remains available by design.
+
+Verification: package tests include formatter bounds/redaction, nested Codable causes, middleware quiet success, returned failure correlation, sensitive body redaction, preserved Abort headers, and sanitized unexpected public errors, plus the existing auth/AI/stream/monitor tests. Live PostgreSQL, production requests and deployment hooks were not exercised.

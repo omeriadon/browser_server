@@ -97,11 +97,25 @@ actor WebsiteMonitorWorker {
                 monitor.nextCheck = Calendar(identifier: .gregorian).date(byAdding: monitor.intervalDays == 30 ? .month : .day, value: monitor.intervalDays == 30 ? 1 : monitor.intervalDays, to: start) ?? start.addingTimeInterval(Double(monitor.intervalDays) * 86400)
                 monitor.checks += 1
                 try await monitor.update(on: app.db)
+                var pageContext = ""
+                var decisionContext = ""
                 do {
                     guard let url = URL(string: monitor.url) else { throw Abort(.badRequest) }
-                    let page = try await PublicWebsiteReader.read(url)
-                    app.logger.info("AI usage feature=website-monitor event=request monitor=\(monitor.id!)")
-                    let response = try await ai.generate(.init(modelID: Environment.get("MONITOR_OPENROUTER_MODEL") ?? "openai/gpt-4o-mini", instructions: monitor.instructions, prompt: "Current date: \(Date().ISO8601Format())\nWebsite URL: \(monitor.url)\nCondition: \(monitor.criterion)\n<untrusted-page>\n\(page)\n</untrusted-page>", maximumResponseTokens: 256), subject: monitor.owner, client: app.client)
+                    let page = try await PublicWebsiteReader.read(url, logger: app.logger, requestID: monitor.id?.uuidString)
+                    pageContext = page
+                    let response = try await ai.generate(
+                        .init(
+                            modelID: Environment.get("MONITOR_OPENROUTER_MODEL") ?? "openai/gpt-4o-mini",
+                            instructions: monitor.instructions,
+                            prompt: "Current date: \(Date().ISO8601Format())\nWebsite URL: \(monitor.url)\nCondition: \(monitor.criterion)\n<untrusted-page>\n\(page)\n</untrusted-page>",
+                            maximumResponseTokens: 256
+                        ),
+                        subject: monitor.owner,
+                        client: app.client,
+                        logger: app.logger,
+                        requestID: monitor.id?.uuidString
+                    )
+                    decisionContext = response.text
                     let decision = try WebsiteMonitorDecision.decode(response.text)
                     guard let current = try await WebsiteMonitor.find(monitor.id, on: app.db), current.enabled else { continue }
                     current.lastError = nil
@@ -110,16 +124,35 @@ actor WebsiteMonitorWorker {
                         current.message = decision.reason
                     }
                     try await current.update(on: app.db)
-                    app.logger.info("AI usage feature=website-monitor event=success monitor=\(monitor.id!) matched=\(decision.matched)")
                 } catch {
+                    if Task.isCancelled || error is CancellationError { return }
+                    DiagnosticFormatter.log(
+                        error,
+                        logger: app.logger,
+                        requestID: monitor.id?.uuidString,
+                        operation: "monitor.tick",
+                        metadata: [
+                            "monitor_id": .string(monitor.id?.uuidString ?? "unknown"),
+                            "owner": .string(monitor.owner),
+                            "url": .string(monitor.url),
+                            "criterion": .string(monitor.criterion),
+                            "instructions_context": .string(monitor.instructions),
+                            "page_context": .string(pageContext),
+                            "decision_context": .string(decisionContext),
+                            "check_count": .stringConvertible(monitor.checks),
+                            "interval_days": .stringConvertible(monitor.intervalDays),
+                            "elapsed": .string(String(describing: Date.now.timeIntervalSince(start))),
+                        ]
+                    )
                     if let current = try await WebsiteMonitor.find(monitor.id, on: app.db) {
                         current.lastError = (error as? Abort)?.reason ?? "The website or AI service could not be checked."
                         try await current.update(on: app.db)
                     }
-                    app.logger.warning("AI usage feature=website-monitor event=failed monitor=\(monitor.id!)")
                 }
             }
-        } catch { app.logger.error("Website monitoring tick failed: \(String(describing: type(of: error)))") }
+        } catch {
+            DiagnosticFormatter.log(error, logger: app.logger, operation: "monitor.tick.query")
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import JWTKit
+import Logging
 import Vapor
 
 struct AppleCredentials: Content {
@@ -17,10 +18,18 @@ struct BrowserSessionAuthenticator: AsyncBearerAuthenticator {
     let authentication: BrowserAuthentication
 
     func authenticate(bearer: BearerAuthorization, for request: Request) async throws {
-        guard let subject = try? await authentication.verifySession(bearer.token) else {
-            return
+        do {
+            let subject = try await authentication.verifySession(bearer.token)
+            request.auth.login(AuthenticatedBrowserUser(appleSubject: subject))
+        } catch {
+            DiagnosticFormatter.log(
+                error,
+                logger: request.logger,
+                requestID: request.diagnosticRequestID,
+                operation: "auth.session.verify",
+                redacting: [bearer.token]
+            )
         }
-        request.auth.login(AuthenticatedBrowserUser(appleSubject: subject))
     }
 }
 
@@ -55,17 +64,27 @@ struct BrowserAuthentication: Sendable {
         return Self(appleClientIDs: appleClientIDs, sessionKeys: sessionKeys)
     }
 
-    func verifyAppleIdentityToken(_ token: String, client: any Client) async throws -> String {
+    func verifyAppleIdentityToken(_ token: String, client: any Client, logger: Logger? = nil, requestID: String? = nil) async throws -> String {
         let response: ClientResponse
         do {
             response = try await client.get("https://appleid.apple.com/auth/keys")
         } catch {
+            logger.map { DiagnosticFormatter.log(error, logger: $0, requestID: requestID, operation: "auth.apple.keys", redacting: [token]) }
             throw Abort(.badGateway, reason: "Unable to load Apple's signing keys.")
         }
         let readableBytes = response.body?.readableBytes ?? 0
         guard response.status == .ok,
               let keysJSON = response.body?.getString(at: 0, length: readableBytes)
         else {
+            logger.map {
+                DiagnosticFormatter.log(
+                    Abort(.badGateway, reason: "Apple signing key response was invalid"),
+                    logger: $0,
+                    requestID: requestID,
+                    operation: "auth.apple.keys",
+                    metadata: ["provider_status": .stringConvertible(response.status.code)]
+                )
+            }
             throw Abort(.badGateway, reason: "Unable to load Apple's signing keys.")
         }
 
@@ -75,6 +94,16 @@ struct BrowserAuthentication: Sendable {
             try verifyAppleAudience(payload.audience)
             return payload.subject.value
         } catch {
+            if let logger {
+                DiagnosticFormatter.log(
+                    error,
+                    logger: logger,
+                    requestID: requestID,
+                    operation: "auth.apple.verify",
+                    metadata: ["allowed_audiences": .string(appleClientIDs.joined(separator: ","))],
+                    redacting: [token]
+                )
+            }
             throw Abort(.unauthorized, reason: "Invalid Apple identity token.")
         }
     }

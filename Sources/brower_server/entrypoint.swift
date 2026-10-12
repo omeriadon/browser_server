@@ -22,7 +22,7 @@ enum Entrypoint {
             try await configure(app)
             try await app.execute()
         } catch {
-            app.logger.report(error: error)
+            DiagnosticFormatter.log(error, logger: app.logger, operation: "startup")
             try? await app.asyncShutdown()
             throw error
         }

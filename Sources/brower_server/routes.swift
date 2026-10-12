@@ -15,7 +15,9 @@ func routes(_ app: Application) throws {
 
         let subject = try await request.application.browserAuthentication.verifyAppleIdentityToken(
             credentials.identityToken,
-            client: request.client
+            client: request.client,
+            logger: request.logger,
+            requestID: request.diagnosticRequestID
         )
         return try await request.application.browserAuthentication.issueSession(for: subject)
     }

@@ -1,5 +1,6 @@
 import Foundation
 import AsyncHTTPClient
+import Logging
 import Vapor
 
 struct BrowserAIRequest: Content {
@@ -65,12 +66,18 @@ func aiRoutes(_ routes: any RoutesBuilder, service: BrowserAIService) {
     routes.on(.POST, ["ai", "generate"], body: .collect(maxSize: "20mb")) { request async throws -> BrowserAIResponse in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         let body = try request.content.decode(BrowserAIRequest.self)
-        return try await service.generate(body, subject: user.appleSubject, client: request.client)
+        return try await service.generate(
+            body,
+            subject: user.appleSubject,
+            client: request.client,
+            logger: request.logger,
+            requestID: request.diagnosticRequestID
+        )
     }
     routes.on(.POST, ["ai", "stream"], body: .collect(maxSize: "20mb")) { request async throws -> Response in
         let user = try request.auth.require(AuthenticatedBrowserUser.self)
         let body = try request.content.decode(BrowserAIRequest.self)
-        return try await service.stream(body, subject: user.appleSubject) { upstream in
+        return try await service.stream(body, subject: user.appleSubject, logger: request.logger, requestID: request.diagnosticRequestID) { upstream in
             try await request.application.http.client.shared.execute(upstream, timeout: .seconds(75))
         }
     }
@@ -107,12 +114,23 @@ actor BrowserAIService {
         )
     }
 
-    func generate(_ body: BrowserAIRequest, subject: String, client: any Client) async throws -> BrowserAIResponse {
-        try body.validate(allowedModels: allowedModels)
-        guard let apiKey, !apiKey.isEmpty else {
-            throw Abort(.serviceUnavailable, reason: "Cloud AI is not configured.")
+    func generate(_ body: BrowserAIRequest, subject: String, client: any Client, logger: Logger? = nil, requestID: String? = nil) async throws -> BrowserAIResponse {
+        do {
+            try body.validate(allowedModels: allowedModels)
+        } catch {
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.preflight", metadata: requestMetadata(body, subject: subject, extra: ["allowed_models": .string(allowedModels.sorted().joined(separator: ","))]))
+            }
+            throw error
         }
-        try reserve(for: subject)
+        guard let apiKey, !apiKey.isEmpty else {
+            let error = Abort(.serviceUnavailable, reason: "Cloud AI is not configured.")
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.configuration", metadata: requestMetadata(body, subject: subject))
+            }
+            throw error
+        }
+        try reserve(for: subject, logger: logger, requestID: requestID)
         defer { release(for: subject) }
 
         let response: ClientResponse
@@ -133,27 +151,74 @@ actor BrowserAIService {
                 ))
             }
         } catch {
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.generate.provider", metadata: requestMetadata(body, subject: subject), redacting: [apiKey])
+            }
             // Do not expose provider errors, headers, prompts, or credentials.
             throw Abort(.badGateway, reason: "The AI provider could not be reached.")
         }
         if response.status == .tooManyRequests {
+            logger.map { DiagnosticFormatter.log(Abort(.tooManyRequests), logger: $0, requestID: requestID, operation: "ai.generate.provider", metadata: requestMetadata(body, subject: subject, extra: ["provider_status": .stringConvertible(response.status.code)])) }
             throw Abort(.tooManyRequests, reason: "The AI provider is busy. Try again later.")
         }
-        guard response.status == .ok,
-              let buffer = response.body,
-              buffer.readableBytes <= 262_144,
-              let completion = try? response.content.decode(OpenRouterResponse.self),
-              let choice = completion.choices.first,
+        guard response.status == .ok, let buffer = response.body, buffer.readableBytes <= 262_144 else {
+            if let logger {
+                let detail = response.body.map { String(decoding: $0.readableBytesView, as: UTF8.self) } ?? ""
+                DiagnosticFormatter.log(
+                    Abort(.badGateway, reason: "Provider response was incomplete"),
+                    logger: logger,
+                    requestID: requestID,
+                    operation: "ai.generate.provider",
+                    metadata: requestMetadata(body, subject: subject, extra: ["provider_status": .stringConvertible(response.status.code), "provider_body": .string(DiagnosticFormatter.sanitize(detail))])
+                )
+            }
+            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
+        }
+        let completion: OpenRouterResponse
+        do {
+            completion = try response.content.decode(OpenRouterResponse.self)
+        } catch {
+            logger.map {
+                DiagnosticFormatter.log(
+                    error,
+                    logger: $0,
+                    requestID: requestID,
+                    operation: "ai.generate.decode",
+                    metadata: requestMetadata(body, subject: subject, extra: [
+                        "provider_status": .stringConvertible(response.status.code),
+                        "provider_bytes": .stringConvertible(response.body?.readableBytes ?? 0),
+                        "provider_content_type": .string(response.headers.first(name: "Content-Type") ?? "missing"),
+                        "provider_body": .string(response.body.map { DiagnosticFormatter.sanitize(String(decoding: $0.readableBytesView, as: UTF8.self), redacting: [apiKey]) } ?? "missing"),
+                    ]),
+                    redacting: [apiKey]
+                )
+            }
+            throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
+        }
+        guard let choice = completion.choices.first,
               choice.finishReason == "stop",
               let text = choice.message.content,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else {
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            if let logger {
+                DiagnosticFormatter.log(
+                    Abort(.badGateway, reason: "Invalid provider completion semantics."),
+                    logger: logger,
+                    requestID: requestID,
+                    operation: "ai.generate.incomplete",
+                    metadata: requestMetadata(body, subject: subject, extra: [
+                        "choices": .stringConvertible(completion.choices.count),
+                        "finish_reason": .string(completion.choices.first?.finishReason ?? "missing"),
+                        "provider_body": .string(String(decoding: buffer.readableBytesView, as: UTF8.self)),
+                    ]),
+                    redacting: [apiKey]
+                )
+            }
             throw Abort(.badGateway, reason: "The AI provider did not return a complete text response.")
         }
         return BrowserAIResponse(text: text)
     }
 
-    private func reserve(for subject: String, now: Date = .now) throws {
+    private func reserve(for subject: String, now: Date = .now, logger: Logger? = nil, requestID: String? = nil) throws {
         // ponytail: process-local quotas reset on restart; use a shared store before running multiple replicas.
         usage = usage.filter { $0.value.activeRequests > 0 || now.timeIntervalSince($0.value.dayStarted) < 86_400 }
         var current = usage[subject] ?? Usage(dayStarted: now, minuteStarted: now)
@@ -169,7 +234,20 @@ actor BrowserAIService {
               current.activeRequests < 2, activeRequests < 8,
               usage[subject] != nil || usage.count < 10_000
         else {
-            throw Abort(.tooManyRequests, reason: "AI usage limit reached. Try again later.")
+            let error = Abort(.tooManyRequests, reason: "AI usage limit reached. Try again later.")
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.quota", metadata: [
+                    "account": .string(subject),
+                    "daily_attempts": .stringConvertible(current.dailyRequests),
+                    "minute_attempts": .stringConvertible(current.minuteRequests),
+                    "account_active": .stringConvertible(current.activeRequests),
+                    "process_active": .stringConvertible(activeRequests),
+                    "tracked_accounts": .stringConvertible(usage.count),
+                    "day_started": .string(String(describing: current.dayStarted)),
+                    "minute_started": .string(String(describing: current.minuteStarted)),
+                ])
+            }
+            throw error
         }
         current.dailyRequests += 1
         current.minuteRequests += 1
@@ -186,14 +264,28 @@ actor BrowserAIService {
     func stream(
         _ body: BrowserAIRequest,
         subject: String,
+        logger: Logger? = nil,
+        requestID: String? = nil,
         execute: @Sendable (HTTPClientRequest) async throws -> HTTPClientResponse
     ) async throws -> Response {
-        try body.validate(allowedModels: allowedModels)
-        guard let apiKey, !apiKey.isEmpty else {
-            throw Abort(.serviceUnavailable, reason: "Cloud AI is not configured.")
+        do {
+            try body.validate(allowedModels: allowedModels)
+        } catch {
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.preflight", metadata: requestMetadata(body, subject: subject, extra: ["allowed_models": .string(allowedModels.sorted().joined(separator: ","))]))
+            }
+            throw error
         }
-        try reserve(for: subject)
+        guard let apiKey, !apiKey.isEmpty else {
+            let error = Abort(.serviceUnavailable, reason: "Cloud AI is not configured.")
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.configuration", metadata: requestMetadata(body, subject: subject))
+            }
+            throw error
+        }
+        try reserve(for: subject, logger: logger, requestID: requestID)
         let upstream: HTTPClientResponse
+        var providerMetadata: Logger.Metadata = [:]
         do {
             var request = HTTPClientRequest(url: "https://openrouter.ai/api/v1/chat/completions")
             request.method = .POST
@@ -212,6 +304,19 @@ actor BrowserAIService {
                 plugins: body.webSearch == true ? [.init(id: "web", maxResults: 3)] : nil
             )))
             upstream = try await execute(request)
+            providerMetadata = [
+                "provider_status": .stringConvertible(upstream.status.code),
+                "provider_content_type": .string(upstream.headers.first(name: "Content-Type") ?? "missing"),
+                "provider_request_id": .string(upstream.headers.first(name: "X-Request-ID") ?? "missing"),
+            ]
+            if upstream.status != .ok {
+                do {
+                    let buffer = try await upstream.body.collect(upTo: 16_384)
+                    providerMetadata["provider_body"] = .string(DiagnosticFormatter.sanitize(String(decoding: buffer.readableBytesView, as: UTF8.self), redacting: [apiKey]))
+                } catch {
+                    providerMetadata["provider_body_error"] = .string(DiagnosticFormatter.errorChain(error, redacting: [apiKey]))
+                }
+            }
             if upstream.status == .tooManyRequests {
                 throw Abort(.tooManyRequests, reason: "The AI provider is busy. Try again later.")
             }
@@ -222,6 +327,9 @@ actor BrowserAIService {
             }
         } catch {
             release(for: subject)
+            if let logger {
+                DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.stream.start", metadata: requestMetadata(body, subject: subject, extra: providerMetadata), redacting: [apiKey])
+            }
             if let abort = error as? Abort, abort.status == .tooManyRequests {
                 throw abort
             }
@@ -233,12 +341,19 @@ actor BrowserAIService {
         response.headers.replaceOrAdd(name: "Cache-Control", value: "no-cache, no-transform")
         response.headers.replaceOrAdd(name: "X-Accel-Buffering", value: "no")
         response.body = .init(managedAsyncStream: { writer in
+            var totalBytes = 0
+            var frames = 0
+            var lastFrame = ""
+            let started = ContinuousClock.now
             do {
                 var parser = BrowserSSEParser()
                 var decoder = OpenRouterStreamDecoder()
                 for try await buffer in upstream.body {
                     try Task.checkCancellation()
+                    totalBytes += buffer.readableBytes
                     for data in try parser.feed(buffer) {
+                        frames += 1
+                        lastFrame = data
                         if let event = try decoder.consume(data) {
                             try await writer.writeBuffer(event.buffer())
                         }
@@ -248,7 +363,17 @@ actor BrowserAIService {
                 guard decoder.isComplete else {
                     throw Abort(.badGateway, reason: "Incomplete AI stream.")
                 }
+            } catch is CancellationError {
+                // Client disconnects are routine and do not indicate a provider failure.
             } catch {
+                if let logger {
+                    DiagnosticFormatter.log(error, logger: logger, requestID: requestID, operation: "ai.stream.body", metadata: self.requestMetadata(body, subject: subject, extra: [
+                        "stream_bytes": .stringConvertible(totalBytes),
+                        "frames": .stringConvertible(frames),
+                        "last_frame": .string(DiagnosticFormatter.sanitize(lastFrame, redacting: [apiKey])),
+                        "elapsed": .string(String(describing: started.duration(to: .now))),
+                    ]), redacting: [apiKey])
+                }
                 // A 200 stream can fail later. Never forward upstream error details.
                 let event = BrowserAIStreamEvent(text: nil, isFinal: nil, error: "Cloud AI generation failed.")
                 try? await writer.writeBuffer(event.buffer())
@@ -256,6 +381,21 @@ actor BrowserAIService {
             await self.release(for: subject)
         })
         return response
+    }
+
+    private nonisolated func requestMetadata(_ body: BrowserAIRequest, subject: String, extra: Logger.Metadata = [:]) -> Logger.Metadata {
+        var metadata = extra
+        metadata["model"] = .string(DiagnosticFormatter.sanitize(body.modelID))
+        metadata["account"] = .string(DiagnosticFormatter.sanitize(subject))
+        metadata["instructions_bytes"] = .stringConvertible(body.instructions.utf8.count)
+        metadata["prompt_bytes"] = .stringConvertible(body.prompt.utf8.count)
+        metadata["image_count"] = .stringConvertible(body.images?.count ?? 0)
+        metadata["image_bytes"] = .stringConvertible(body.images?.reduce(0, { $0 + $1.data.count }) ?? 0)
+        metadata["maximum_response_tokens"] = .stringConvertible(body.maximumResponseTokens)
+        metadata["web_search"] = .stringConvertible(body.webSearch == true)
+        metadata["instructions_context"] = .string(DiagnosticFormatter.sanitize(body.instructions))
+        metadata["prompt_context"] = .string(DiagnosticFormatter.sanitize(body.prompt))
+        return metadata
     }
 }
 

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftSoup
+import Logging
 import Vapor
 #if os(Linux)
 import Glibc
@@ -39,7 +40,7 @@ enum PublicWebsiteReader {
         }
     }
 
-    private static func resolve(_ host: String) throws -> String {
+    private static func resolve(_ host: String, logger: Logger? = nil, requestID: String? = nil) throws -> String {
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
         #if os(Linux)
@@ -48,7 +49,17 @@ enum PublicWebsiteReader {
         hints.ai_socktype = SOCK_STREAM
         #endif
         var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(host, nil, &hints, &result) == 0, let first = result else {
+        let status = getaddrinfo(host, nil, &hints, &result)
+        guard status == 0, let first = result else {
+            logger.map {
+                DiagnosticFormatter.log(
+                    NSError(domain: "getaddrinfo", code: Int(status), userInfo: [NSLocalizedDescriptionKey: String(cString: gai_strerror(status))]),
+                    logger: $0,
+                    requestID: requestID,
+                    operation: "monitor.resolve",
+                    metadata: ["host": .string(DiagnosticFormatter.sanitize(host))]
+                )
+            }
             throw Abort(.badRequest, reason: "The website hostname could not be resolved.")
         }
         defer { freeaddrinfo(first) }
@@ -67,7 +78,7 @@ enum PublicWebsiteReader {
         return addresses.first!
     }
 
-    static func read(_ initialURL: URL) async throws -> String {
+    static func read(_ initialURL: URL, logger: Logger? = nil, requestID: String? = nil) async throws -> String {
         try await Task.detached(priority: .utility) {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("astra-monitor-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -76,18 +87,39 @@ enum PublicWebsiteReader {
             for _ in 0..<4 {
                 try validate(url)
                 let host = url.host!
-                let address = try resolve(host)
+                let address = try resolve(host, logger: logger, requestID: requestID)
                 let pinned = address.contains(":") ? "[\(address)]" : address
                 let headers = directory.appendingPathComponent("headers")
                 let body = directory.appendingPathComponent("body")
+                let stderr = directory.appendingPathComponent("stderr")
+                guard FileManager.default.createFile(atPath: stderr.path, contents: nil) else {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
                 process.arguments = ["--disable", "--silent", "--show-error", "--noproxy", "*", "--proto", "=http,https", "--max-time", "25", "--connect-timeout", "10", "--max-filesize", "4194304", "--resolve", "\(host):\(url.port ?? (url.scheme == "https" ? 443 : 80)):\(pinned)", "--dump-header", headers.path, "--output", body.path, "--user-agent", "Mozilla/5.0 AstraWebsiteMonitor/1.0", "--", url.absoluteString]
                 process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
+                let stderrHandle = try FileHandle(forWritingTo: stderr)
+                defer { try? stderrHandle.close() }
+                process.standardError = stderrHandle
                 try process.run()
                 process.waitUntilExit()
-                guard process.terminationStatus == 0 else { throw Abort(.badGateway, reason: "The public website could not be read within its size or time limit.") }
+                try? stderrHandle.close()
+                guard process.terminationStatus == 0 else {
+                    let reader = try FileHandle(forReadingFrom: stderr)
+                    defer { try? reader.close() }
+                    let detail = String(decoding: try reader.read(upToCount: 16_384) ?? Data(), as: UTF8.self)
+                    logger.map {
+                        DiagnosticFormatter.log(
+                            NSError(domain: "curl", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: detail]),
+                            logger: $0,
+                            requestID: requestID,
+                            operation: "monitor.fetch",
+                            metadata: ["url": .string(DiagnosticFormatter.sanitize(url.absoluteString)), "address": .string(address)]
+                        )
+                    }
+                    throw Abort(.badGateway, reason: "The public website could not be read within its size or time limit.")
+                }
                 let header = try String(contentsOf: headers, encoding: .utf8)
                 let lines = header.components(separatedBy: .newlines)
                 let status = lines.first(where: { $0.hasPrefix("HTTP/") })?.split(separator: " ").dropFirst().first.flatMap { Int($0) } ?? 0
@@ -96,7 +128,18 @@ enum PublicWebsiteReader {
                     url = next
                     continue
                 }
-                guard (200..<300).contains(status) else { throw Abort(.badGateway, reason: "The website returned HTTP \(status).") }
+                guard (200..<300).contains(status) else {
+                    logger.map {
+                        DiagnosticFormatter.log(
+                            Abort(.badGateway, reason: "The website returned HTTP \(status)."),
+                            logger: $0,
+                            requestID: requestID,
+                            operation: "monitor.http",
+                            metadata: ["url": .string(DiagnosticFormatter.sanitize(url.absoluteString)), "http_status": .stringConvertible(status)]
+                        )
+                    }
+                    throw Abort(.badGateway, reason: "The website returned HTTP \(status).")
+                }
                 let data = try Data(contentsOf: body)
                 guard data.count <= 4_194_304, let html = String(data: data, encoding: .utf8) else { throw Abort(.badGateway) }
                 let document = try SwiftSoup.parse(html)
