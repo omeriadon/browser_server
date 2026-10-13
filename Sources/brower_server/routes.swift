@@ -34,7 +34,7 @@ func routes(_ app: Application) throws {
         return try await SyncSnapshot.query(on: request.db)
             .filter(\.$appleSubject == user.appleSubject)
             .all()
-            .map(\.response)
+            .map { try $0.response() }
     }
 
     authenticated.on(.PUT, ["sync"], body: .collect(maxSize: "7mb")) { request async throws -> SyncSnapshotResponse in
@@ -55,6 +55,6 @@ func routes(_ app: Application) throws {
         snapshot.revision += 1
         snapshot.updatedAt = .now
         try await snapshot.save(on: request.db)
-        return snapshot.response
+        return try snapshot.response()
     }
 }

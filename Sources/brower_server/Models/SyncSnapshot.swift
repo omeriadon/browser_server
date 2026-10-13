@@ -41,13 +41,32 @@ final class SyncSnapshot: Model, @unchecked Sendable {
         self.updatedAt = updatedAt
     }
 
-    var response: SyncSnapshotResponse {
-        SyncSnapshotResponse(
+    func response() throws -> SyncSnapshotResponse {
+        let responsePayload = try Self.responsePayload(from: payload)
+        return SyncSnapshotResponse(
             deviceID: deviceID,
-            payload: payload,
+            payload: responsePayload,
             revision: revision,
             updatedAt: updatedAt
         )
+    }
+
+    private static func responsePayload(from payload: Data) throws -> Data {
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: payload, options: [.fragmentsAllowed])
+        } catch {
+            return payload
+        }
+        guard var dictionary = object as? [String: Any], dictionary.keys.contains("version") else {
+            return payload
+        }
+        if let version = dictionary["version"] as? NSNumber, version.intValue == 1 {
+            return payload
+        }
+        // Keep the response marker compatible with installed clients that still gate versions.
+        dictionary["version"] = 1
+        return try JSONSerialization.data(withJSONObject: dictionary)
     }
 }
 

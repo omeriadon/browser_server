@@ -28,10 +28,15 @@ credentials. Only allowlisted preferences may leave the device.
 
 ## Request flow
 
-After hydration, the signed-in client fetches snapshots, validates supported
-versions and structure, merges them with local data, protects edits made while
+After hydration, the signed-in client fetches snapshots, validates their
+structure, merges them with local data, protects edits made while
 the request was in flight, persists the result, and uploads its current device
 snapshot when needed. Generation and endpoint checks reject stale account work.
+
+Sync does not reject documents because of their version marker. The server
+returns marker `1` for installed clients that still check it, while preserving
+stored payloads and all other fields. Unknown fields are ignored by the client;
+incompatible field types and invalid structures still fail validation.
 
 Transient GET/PUT failures can retry. Authentication and AI POST requests do
 not automatically retry. Offline browser data remains local; a sync error is
